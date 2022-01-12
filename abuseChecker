@@ -1,0 +1,120 @@
+#!/bin/sh
+
+if [[ "$1" = "-h" || "$1" = "--help" ]];
+then
+	echo Usage: abusechecker [OPTION] [IP]
+	echo
+	printf '  -h, --help \t\t Shows this message\n'
+	printf '  -u, --update \t\t Retrieve IPs in apaches access_log and store them\n'
+	printf '  -c, --check \t\t Checks stored list of IPs for their abuse scores\n'
+	printf '  -B, --block \t\t Block all IPs with a score of 100\n'
+	printf '  -w, --whitelist \t Whitelist a given ip. Usage: -w [IP] [0 or 1]\n'
+	printf '  -g, --get \t\t Get stored details on a given IP\n'
+
+elif [[ "$1" = "-u" || "$1" = "--update" ]];
+then
+
+	accessed=$(mktemp)
+	cat /var/log/httpd/access_log | sed 's/-.*//' | sort -u > $accessed
+
+	currlist=$(mktemp)
+	sqlite3 ips.db "select ip from ips" > $currlist
+
+	numdupes=0
+	numnew=0
+
+	while read NEW; do
+		duplicate=0
+		while read OLD; do
+			if [ $NEW = $OLD ]
+			then
+				duplicate=1
+			fi
+		done < $currlist
+		if [ $duplicate -eq 0 ]
+		then
+			sql="INSERT INTO ips (ip, checked, blocked) VALUES
+			('$NEW', 0, 0);"
+			sqlite3 ips.db "$sql"
+			numnew=$((numnew+1))
+			echo Entered $NEW
+		else
+			numdupes=$((numdupes+1))
+		fi
+	done < $accessed
+
+	echo
+	echo $numnew new IPs were entered
+	echo $numdupes duplicate IPs were skipped.
+
+	rm $accessed
+	rm $currlist
+
+elif [[ "$1" = "-c" || "$1" = "--check" ]];
+then
+
+	IPlist=$(mktemp)
+	sqlite3 ips.db "SELECT ip FROM ips WHERE checked IS 0" > $IPlist
+
+	jsontmp=$(mktemp)
+	while read UNCHECKED; do
+
+		curl -sG https://api.abuseipdb.com/api/v2/check \
+			--data-urlencode "ipAddress=$UNCHECKED" \
+			-H "Key: 9c30d78c3311ec5b3d025e212478006128e2e2dbbcc30c61d1166fbfde158f2aec35dbb9fa6e55cf" \
+			-H "Accept: application/json" >$jsontmp
+		score=$(jq -r '.data.abuseConfidenceScore' $jsontmp)
+
+		echo -e $score '\t' $UNCHECKED
+
+		sqlite3 ips.db "UPDATE ips SET score = $score WHERE ip = '$UNCHECKED'"
+		sqlite3 ips.db "UPDATE ips SET checked = 1 WHERE ip = '$UNCHECKED'"
+
+	done < $IPlist
+
+	rm $IPlist
+	rm $jsontmp
+
+elif [[ "$1" = "-B" || "$1" = "--block" ]];
+then
+
+	badips=$(mktemp)
+	sqlite3 ips.db "SELECT ip FROM ips WHERE blocked = 0 AND whitelist IS NULL AND score = 100" > $badips
+
+	sudo iptables-restore < /etc/iptables/iptables.rules
+
+	while read CHECKED; do
+
+		sudo iptables -I INPUT -s $CHECKED -j DROP
+		sqlite3 ips.db "UPDATE ips SET blocked = 1 WHERE ip = '$CHECKED'"
+		echo Blocked $CHECKED
+
+	done < $badips
+
+	sudo iptables-save > /etc/iptables/iptables.rules
+
+	rm $badips
+
+elif [[ "$"1 = "-w" || "$1" = "--whitelist" ]];
+then
+
+	output=$(sqlite3 ips.db "UPDATE ips SET whitelist = $3 WHERE ip = '$2'")
+	echo $output
+
+elif [[ "$1" = "-g" || "$1" = "--get" ]];
+then
+
+	if [ -z "$2" ];
+	then
+
+		sqlite3 ips.db "SELECT * FROM ips"
+
+	else
+
+		echo $(sqlite3 ips.db "SELECT * FROM ips WHERE ip = '$2'")
+
+	fi
+
+	echo id, ip, score, checked, blocked, whitelist
+
+fi
