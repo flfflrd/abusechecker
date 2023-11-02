@@ -1,0 +1,31 @@
+#!/bin/bash
+
+# Define the SQLite database file path
+DB_FILE="ips.db"
+
+# Check if the database file already exists
+if [ -e "$DB_FILE" ]; then
+    echo "Database file '$DB_FILE' already exists. Aborting."
+    exit 1
+fi
+
+# Create the SQLite database and schema
+sqlite3 "$DB_FILE" <<EOF
+-- Create the 'ips' table with the specified schema
+CREATE TABLE ips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    score INTEGER,
+    checked INTEGER,
+    blocked INTEGER,
+    whitelist INTEGER
+);
+EOF
+
+# Check if the database was created successfully
+if [ $? -eq 0 ]; then
+    echo "SQLite database '$DB_FILE' has been created with the 'ips' table."
+else
+    echo "Failed to create the SQLite database."
+fi
+

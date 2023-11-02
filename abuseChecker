@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 if [[ "$1" = "-h" || "$1" = "--help" ]];
 then
@@ -14,8 +14,12 @@ then
 elif [[ "$1" = "-u" || "$1" = "--update" ]];
 then
 
+	# not sure why i did tempfiles, could just use a list
 	accessed=$(mktemp)
-	cat /var/log/httpd/access_log | sed 's/-.*//' | sort -u > $accessed
+	# Im sure theres a way to glob this together but idk, this works fine
+	cat /var/log/apache2/access.log | sed 's/-.*//' | sort -u > $accessed
+	cat /var/log/apache2/access.log.1 | sed 's/-.*//' | sort -u >> $accessed
+	zcat /var/log/apache2/access.log.*.gz | sed 's/-.*//' | sort -u >> $accessed
 
 	currlist=$(mktemp)
 	sqlite3 ips.db "select ip from ips" > $currlist
@@ -39,6 +43,9 @@ then
 			numnew=$((numnew+1))
 			echo Entered $NEW
 		else
+			# Gotta move this into its own function. Displaying HR names and \
+			#  maybe even whois excerpts would be useful
+			#echo $(nslookup $NEW | grep name | awk -F ' ' '{print $4}')
 			numdupes=$((numdupes+1))
 		fi
 	done < $accessed
@@ -81,17 +88,13 @@ then
 	badips=$(mktemp)
 	sqlite3 ips.db "SELECT ip FROM ips WHERE blocked = 0 AND whitelist IS NULL AND score = 100" > $badips
 
-	sudo iptables-restore < /etc/iptables/iptables.rules
-
 	while read CHECKED; do
 
-		sudo iptables -I INPUT -s $CHECKED -j DROP
+		sudo ufw deny from $CHECKED
 		sqlite3 ips.db "UPDATE ips SET blocked = 1 WHERE ip = '$CHECKED'"
 		echo Blocked $CHECKED
 
 	done < $badips
-
-	sudo iptables-save > /etc/iptables/iptables.rules
 
 	rm $badips
 
@@ -107,14 +110,14 @@ then
 	if [ -z "$2" ];
 	then
 
-		sqlite3 ips.db "SELECT * FROM ips"
+		sqlite3 -separator ' ' ips.db "SELECT * FROM ips" | sed 's/ /\t/g'
 
 	else
 
-		echo $(sqlite3 ips.db "SELECT * FROM ips WHERE ip = '$2'")
+		echo $(sqlite3 -separator ' ' ips.db "SELECT * FROM ips WHERE ip = '$2'" | sed 's/ /\t/g')
 
 	fi
 
-	echo id, ip, score, checked, blocked, whitelist
+	printf "id,\tip,\t\tscore,\tchecked, blocked,\twhitelist\n"
 
 fi
